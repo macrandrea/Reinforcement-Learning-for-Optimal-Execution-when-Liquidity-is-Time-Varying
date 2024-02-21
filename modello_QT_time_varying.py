@@ -24,10 +24,10 @@ import seaborn as sns
 
 in_features = 3
 
-PERM_IMP = 0.001 # entra negativo nel ABM però ricordati #0.0001
+PERM_IMP = 0.001 
 TEMP_IMP = 0.002
-VOLA = 0.00001#0.0001# era 0.01
-MU = 0#0.0002\
+VOLA = 0.00001
+MU = 0
 LAMBDA = 1 # non in uso
 TIME_VAR = False
 IMP_DECR = False
@@ -35,6 +35,8 @@ INV = 20 # inventario
 PASSI = 10 #discretizzazione
 STEP = 100 # abbassa la epsilon ogni 100 azioni compiute
 NUMIT = 10_000# traiettorie di train, quelle di test sono sempre la meta', il numero totale delle azioni compiute in train sarà NUMIT x PASSI
+LR = 0.01
+BATCH = 32
 
 class DQN(nn.Module):
     '''
@@ -81,79 +83,10 @@ class Ambiente():
         dt= 1.0 / self.T
         X = np.zeros((N + 1, I), dtype=float)
         X[0] = self.S0
-        k_0 = 1e-6#0.009
         for i in range(N):
-
-            if TIME_VAR == True:
-                if IMP_DECR == True:
-                    imp = 0.009 - (self.kappa * dt * i) * (self.action)
-                else:
-                    imp = 1e-6 + (self.kappa * dt * i) * (self.action)
-                if imp < 0: imp = 1e-6
-                X[i + 1] = X[i] + (self.mu - imp) * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I) # impatto sale 
-            else:
-                X[i + 1] = X[i] + (self.mu - ((1e-6 + self.kappa) * self.action)) * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I) 
+            X[i + 1] = X[i] + (self.mu - (self.kappa * self.action)) * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I) 
 
         return np.abs(X)
-    
-    def updn(self, seed = 14, numIt=10):
-        '''
-        returns a matrix of Arithmetic Brownian Motion paths
-        '''
-        N = 3600
-        I = numIt
-        dt= 1.0 / 3600
-        X =np.zeros((N + 1, I), dtype=float)
-        X[0] = 10
-        step = 5
-        for i in range(N):
-
-            if (i < N/step) or (N/step*2 < i < N/step*3) or (N/step*4 < i < N/step*5) :
-                sgn = -self.mu
-            elif (N/step < i < N/step*2) or  (N/step*3 < i < N/step*4):
-                sgn = self.mu
-
-            X[i + 1] = X[i] + sgn * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I) 
-
-        return X
-    
-    def abmUD(self, seed = 14, numIt = 1):
-
-        X = np.zeros((3600 + 1, numIt), dtype=float)
-
-        def up():
-
-            N = 3600
-            I = 1
-            dt= 1.0 / 3600
-            X = np.zeros((N + 1, I), dtype=float)
-            X[0] = 10
-
-            for i in range(N):
-                X[i + 1] = X[i] - self.mu * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I)
-            return X
-
-        def dn():
-
-            N = 3600
-            I = 1
-            dt= 1.0 / 3600
-            X = np.zeros((N + 1, I), dtype=float)
-            X[0] = 10
-            for i in range(N):
-                X[i + 1] = X[i] + self.mu * dt + self.sigma * np.sqrt(dt) * np.random.standard_normal(I)
-            return X
-
-        for i in range(numIt):
-
-            if i%2 == 0:#c == 1:
-
-                X[:,i] = up().reshape(-1)
-            else :
-
-                X[:,i] = dn().reshape(-1)
-
-        return X
 
     def inventory_action_transform(self, q, x):
 
@@ -179,15 +112,6 @@ class Ambiente():
         tc = (PASSI - 1) / 2
         return (t - tc) / tc
 
-    def qdr_var_normalize(self, qdr_var, min_v, max_v):
-
-        middle_point = (max_v + min_v) / 2
-        half_length = (max_v - min_v) / 2
-
-        qdr_var = (qdr_var - middle_point) / half_length
-
-        return qdr_var
-
     def price_normalise(self, price, min_p, max_p):
 
         middle_point = (max_p + min_p) / 2
@@ -203,7 +127,7 @@ class Ambiente():
         '''
         q, x = self.inventory_action_transform(inventory, x)
         t = self.time_transform(time)
-        return q, t,  x#p,
+        return q, t,  x
 
 class ReplayMemory():
     '''
@@ -247,14 +171,14 @@ class Agente():
 
         self._update_target_net()
 
-        self.learning_rate = 0.001
+        self.learning_rate = LR
         self.optimizer = optim.Adam(params=self.main_net.parameters(), lr=self.learning_rate)
         self.time_subdivisions = PASSI
         self.inventory = inventario
         self.a_penalty = TEMP_IMP
         self.epsilon = 1
         self.epsilon_decay = 0.995
-        self.batch_size = 32#
+        self.batch_size = BATCH #
         self.gamma = 1#   ##############################################
         self.timestep = 0
         self.update_target_steps = STEP
@@ -348,15 +272,7 @@ class Agente():
         '''
         calculates the reward of going slice and dice between the intervals with the quantity chosen to be traded within the intervals
         '''
-        reward = 0
-        inventory_left = inv
-        M = len(data)
-        xs = x/M
-        for i in range(1, M):
-
-            reward = -20+data[0] * x - alpha * (x ** 2)#inventory_left * (data[i] - data[i - 1]) - self.a_penalty * (xs ** 2)# - PERM_IMP/2 * (inventory_left/M) ** 2 (data[i] - data[i - 1])
-
-            inventory_left -= xs
+        reward = -20+data[0] * x - alpha * (x ** 2)
 
         return reward
 
@@ -364,7 +280,6 @@ class Agente():
         '''
         performs the training of the Q-Function approximated as a NN, manages the corner cases of interval = 4 or = 5
         '''
-        #PROBLEMA E' QUI NEL SAMPLING E NELL'USO DI QUESTI SAMPLING
 
         state       = [tup[:2] for tup in transitions ]
         act         = [tup[2] for tup in transitions  ]
@@ -433,80 +348,6 @@ class Agente():
         new_inv = inv - x
 
         return (new_inv, x, reward)
-
-    def PeL_QL(self, strategy, data):
-        '''
-        calculates the Profit and Loss of the strategy found by DQN
-        '''
-        PeL = 0
-        a = self.a_penalty
-        M = len(data)
-
-        for i in range(self.time_subdivisions):
-
-            x = self.lots_size * strategy[0]
-            xs = x / M
-
-            for t in range(M):
-                if t + 1 < len(data):
-                    PeL += xs * data[t] - a * (xs ** 2) ###############################################################
-
-        return np.double(PeL)
-
-    def PeL_AC_with_drift(self,data):
-        
-        PeL = 0
-        M = len(data)
-        penalty = self.a_penalty
-        
-        T_f = self.time_subdivisions
-        q_0=self.inventory
-
-        mu = Ambiente().mu
-        gamma = 1e-6
-        V = 100
-        eta = V * self.a_penalty #/ 10                                                         
-        sigma = Ambiente().sigma
-                
-        b= V * (pow(sigma, 2)) * gamma / (2 * eta)
-        a= - (V * mu) / (2 * eta)
-        
-        x_present=q_0
-        
-        for i in range(self.time_subdivisions):
-            
-            next_second = i+1
-            x_future =  ((q_0+(a/b))*(m.sinh(m.sqrt(b)*(T_f-next_second)))+(a/b)*m.sinh(m.sqrt(b)*next_second))/m.sinh(m.sqrt(b)*T_f)-(a/b)
-
-
-            xs=self.lots_size*(x_present-x_future)/M 
-                
-            for t in range(M):
-                if t + 1 < len(data):
-
-                    PeL += xs * data[t] - penalty * (xs ** 2)#  -  PERM_IMP/2 * (self.inventory/M) ** 2
-                    
-            x_present = x_future  
-
-        return PeL  
-
-    def PeL_TWAP(self, data):
-        '''
-        Calculates the Profit and Loss of the TWAP strategy
-        '''
-        PeL = 0
-        M = len(data)
-        a = self.a_penalty
-
-        x = self.inventory / self.time_subdivisions * self.lots_size
-        xs = x / M
-
-        for i in range(self.time_subdivisions):
-
-            for t in range(M):
-                if t+1 < len(data):
-                    PeL += xs * data[t] - a * (xs ** 2)  -  PERM_IMP/2 * (self.inventory/M) ** 2
-        return PeL
 
     def step(self, inv, tempo, data, alpha):
         '''
@@ -637,35 +478,11 @@ if __name__ == '__main__':
                 states.append([inv + x, tempo, x])
                 selling_strategy.append(x)
                 dat.append(dati)
-                transaction_cost_balance.append((age.PeL_QL(selling_strategy, dati) - age.PeL_AC_with_drift(dati) ) / age.PeL_AC_with_drift(dati))
-                ql.append(np.asarray(age.PeL_QL(selling_strategy, dati))/5)
-                ac.append(np.asarray(age.PeL_AC_with_drift(dati))/5)
 
-        ql = np.asarray(ql)
-        ac = np.asarray(ac)
-        mean_list = (((ql.reshape(-1,PASSI).sum(axis = 1) - ac.reshape(-1,PASSI).sum(axis = 1)) / ac.reshape(-1,PASSI).sum(axis = 1))/PASSI).mean()*100
-        std_list  = (((ql.reshape(-1,PASSI).sum(axis = 1) - ac.reshape(-1,PASSI).sum(axis = 1)) / ac.reshape(-1,PASSI).sum(axis = 1))/PASSI).std()*100  
-        
         np.save('./Desktop/ennesima/dati', np.asarray(dat)) 
                 
         return mean_list, std_list, act, *doAve(act), *doAve(re), re, transaction_cost_balance, states, ql, ac, np.asarray(dat)
     
-    def get_heatmap(agent):
-
-        def choose_best_action(q,t):   
-            define_state = [q,t]
-            return agent.action(define_state, 0, 1)
-
-        array = np.zeros((21, PASSI))
-
-        for q in range(21):
-            for t in range(PASSI):
-                x = choose_best_action(q,t)
-                array[q][t] = x
-
-        return array
-    
-
     def impl_IS():
         azioni = np.load('C:/Users/macri/Desktop/ennesima/azioni.npy')
         dati =   np.load('C:/Users/macri/Desktop/ennesima/dati.npy')
@@ -674,7 +491,7 @@ if __name__ == '__main__':
         for i in range(dati[:,0].reshape(-1,PASSI).shape[0]):
             a.append(sum(dati[:,0].reshape(-1,PASSI)[i]* azioni.reshape(-1,PASSI)[i] - alpha* azioni.reshape(-1,PASSI)[i]**2))
 
-        return 200-np.asarray(a)#*100
+        return 200-np.asarray(a)
 
     def impl_IS_twap():
         alpha =  np.array([0.004  , 0.00361, 0.00322, 0.00283, 0.00244, 0.00205, 0.00166,  0.00127, 0.00088, 0.00049])  
@@ -693,6 +510,7 @@ if __name__ == '__main__':
     def run(n, test = False):
         numIt = n
         numTr = int(numIt * 0.5)
+
         age = Agente(inventario = INV, numTrain = numIt)
         act_mean, act_sd, act_hist, loss_mean, loss_sd, rew_mean, rew_sd, loss_hist, rew_hist, state, epsilon = doTrain(age, numIt, inc=False)
 
@@ -708,10 +526,6 @@ if __name__ == '__main__':
             np.save('./Desktop/ennesima/trans', tr)
 
             np.save('./Desktop/ennesima/re', re)
-            
-            mu = (((ql.reshape(-1,5).sum(axis = 1) - ac.reshape(-1,5).sum(axis = 1)) / ac.reshape(-1,5).sum(axis = 1))).mean()*100 #non in uso
-            si = (((ql.reshape(-1,5).sum(axis = 1) - ac.reshape(-1,5).sum(axis = 1)) / ac.reshape(-1,5).sum(axis = 1))).std()
-
 
             ql_IS = impl_IS()
             ql_TW = impl_IS_twap()
@@ -720,8 +534,7 @@ if __name__ == '__main__':
             np.save('./Desktop/ennesima/ac', ql_TW)
 
 
-            print('average PandL pct. =', mu, ', PandL sd = ', si ,
-            '\n',', med_act  =' , azioni[-PASSI:] ,', act sd = ', sdaz ,
+            print('med_act  =' , azioni[-PASSI:] ,', act sd = ', sdaz ,
             '\n', ', rew ave =', ricompensa, ', rew sd =', sdRic,
             '\n', ', rew_train =', rew_mean, ', rew sd_train =', rew_sd,
             '\n',', average action chosen from train =', act_mean, 
@@ -747,14 +560,6 @@ if __name__ == '__main__':
             plt.ylabel('rewards')
             plt.xlabel('iterations')
             plt.savefig('./Desktop/ennesima/rewards')
-            plt.close()
-
-            plt.hist(   (((ql.reshape(-1,PASSI).sum(axis = 1) - ac.reshape(-1,PASSI).sum(axis = 1)) / ac.reshape(-1,PASSI).sum(axis = 1))))
-            plt.axvline((((ql.reshape(-1,PASSI).sum(axis = 1) - ac.reshape(-1,PASSI).sum(axis = 1)) / ac.reshape(-1,PASSI).sum(axis = 1))).mean(), color = 'r')
-            plt.title('$\Delta \, \, IS$ of QL and AC, ABM - Q,T,P $\mu=0,\,\, \sigma=0.1$')
-            plt.ylabel('iterations')
-            plt.xlabel('$\Delta \,\, IS$')
-            plt.savefig('./Desktop/ennesima/deltaIS.png')
             plt.close()
 
             return azioni, azioni_med, sdaz, ricompensa, sdRic, re, tr, states, ql_IS, ql_TW, dat
@@ -793,7 +598,7 @@ if __name__ == '__main__':
 
     for _ in range(1):
 
-        np.random.seed(_)
+        np.random.seed(314)
         azioni, azioni_med, sdaz, ricompensa, sdRic, re, tr, states, ql, ac, dati = run(n = NUMIT, test = True)
         azioni_tot.append(azioni_med)
         ql_tot.append(ql) 
